@@ -17,3 +17,14 @@ content/
 *.xlsx
 *.msp
 *.log
+
+# Data folders (keep structure, not content)
+data/raw/*
+data/interim/*
+data/output/*
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/output/.gitkeep
+
+# Local cache for this project
+.cache_pipeline/
