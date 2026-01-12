@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import List, Tuple
 
-def add_core_flags_df(df, *, core_frac: float = 0.80, presence_threshold: float = 0.0):
+def add_core_flags_df(df, *, core_frac: float = 0.67, presence_threshold: float = 0.0):
     """
     Aggiunge colonne per identificare i 'core compounds' su una feature table (DataFrame).
 
@@ -38,7 +38,7 @@ def add_core_flags_df(df, *, core_frac: float = 0.80, presence_threshold: float 
     df_sorted = df.sort_values(sort_cols, ascending=sort_asc).reset_index(drop=True)
     return df_sorted, sample_cols
 
-def core_feature_ids(df, *, core_frac: float = 0.80) -> List[str]:
+def core_feature_ids(df, *, core_frac: float = 0.67) -> List[str]:
     """Ritorna la lista di feature_id core, assumendo che df abbia già le colonne presence_frac/is_core oppure ricalcolandole."""
     if "is_core" in df.columns:
         core_df = df[df["is_core"] == True]

@@ -145,7 +145,7 @@ def extract_compounds_from_mzdata(
     # più finestre TIC
     top_k_windows: int = 150,
     # finestre meno sovrapposte (per efficienza e per evitare duplicati)
-    half_width_min: float = 0.20,
+    half_width_min: float = 0.50,
     # HR
     ppm_tol: float = 10.0,
     # seed/hit più permissivi
@@ -174,7 +174,7 @@ def extract_compounds_from_mzdata(
         rt, tic,
         top_k=top_k_windows,
         half_width_min=half_width_min,
-        min_separation_min=0.25,
+        min_separation_min=0.70,
         min_rel_height=0.001,
         min_width_scans=8,
     )
