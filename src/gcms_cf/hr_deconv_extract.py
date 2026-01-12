@@ -5,7 +5,7 @@ import numpy as np
 
 from .models import Peak, Compound
 from .mzdata_io import compute_tic_mzdata, iter_mzdata_spectra
-from .tic_peaks import pick_tic_windows, TICWindow
+from .tic_peaks import pick_tic_windows
 from .peak_picking import pick_peaks_1d
 
 @dataclass(frozen=True)
@@ -20,18 +20,19 @@ class CompoundCandidateHR:
     scan_id: int
     scan_rt: float
     scan_purity: float
-    matched_peaks: List[Tuple[float, float]]  # (mz, intensity), ordinati per intensità
+    matched_peaks: List[Tuple[float, float]]  # (mz, intensity) ordinati per intensità
 
 def ppm_window(mz: float, ppm: float) -> Tuple[float, float]:
     d = mz * ppm * 1e-6
     return mz - d, mz + d
 
-def _pick_top_seeds(mz: np.ndarray, inten: np.ndarray, *, top_n: int = 120) -> List[float]:
+def _pick_top_seeds(mz: np.ndarray, inten: np.ndarray, *, top_n: int = 250) -> List[float]:
     if mz.size == 0:
         return []
     idx = np.argsort(inten)[::-1][:top_n]
     seeds = [float(mz[i]) for i in idx]
     seeds.sort()
+
     # dedup molto vicino (~3 ppm) per evitare duplicati
     out: List[float] = []
     for m in seeds:
@@ -79,8 +80,7 @@ def _build_seed_eics_from_scans(
     *,
     ppm_tol: float,
     top_n_seeds: int,
-) -> Tuple[np.ndarray, List[float], List[np.ndarray]]:
-    # trova scan più vicino
+) -> Tuple[np.ndarray, List[float], List[np.ndarray], int]:
     rts = np.array([s[0] for s in scans], dtype=float)
     j = int(np.argmin(np.abs(rts - seed_rt)))
     mz0, it0 = scans[j][1], scans[j][2]
@@ -88,7 +88,6 @@ def _build_seed_eics_from_scans(
     seeds = _pick_top_seeds(mz0, it0, top_n=top_n_seeds)
     eics = [np.zeros(len(scans), dtype=float) for _ in seeds]
 
-    # costruisci EIC
     for t_idx, (rt, mz, inten) in enumerate(scans):
         if mz.size == 0:
             continue
@@ -102,7 +101,7 @@ def _build_seed_eics_from_scans(
             if i2 > i1:
                 eics[k][t_idx] = float(np.sum(it_s[i1:i2]))
 
-    return rts, seeds, eics
+    return rts, seeds, eics, j
 
 def _extract_scan_level_matched_spectrum(
     scans: List[Tuple[float, np.ndarray, np.ndarray]],
@@ -111,10 +110,6 @@ def _extract_scan_level_matched_spectrum(
     *,
     ppm_tol: float,
 ) -> Tuple[int, float, List[Tuple[float, float]], float]:
-    """
-    Usa lo scan più vicino a target_rt nella finestra.
-    Ritorna: (scan_idx, scan_rt, matched_peaks, scan_purity)
-    """
     rts = np.array([s[0] for s in scans], dtype=float)
     scan_idx = int(np.argmin(np.abs(rts - target_rt)))
     scan_rt, mz, inten = scans[scan_idx]
@@ -126,7 +121,7 @@ def _extract_scan_level_matched_spectrum(
     it_s = inten[order]
     total = float(np.sum(it_s)) if it_s.size else 0.0
 
-    matched = []
+    matched: List[Tuple[float, float]] = []
     matched_sum = 0.0
     for m0 in target_mz:
         lo, hi = ppm_window(m0, ppm_tol)
@@ -147,32 +142,44 @@ def extract_compounds_from_mzdata(
     xml_path: str,
     *,
     sample_id: str,
-    top_k_windows: int = 20,
-    half_width_min: float = 0.6,
+    # più finestre TIC
+    top_k_windows: int = 150,
+    # finestre meno sovrapposte (per efficienza e per evitare duplicati)
+    half_width_min: float = 0.20,
+    # HR
     ppm_tol: float = 10.0,
-    top_n_seeds: int = 120,
-    hit_rt_tol: float = 0.05,
-    hit_min_rel_height: float = 0.08,
-    max_hits: int = 60,
-    min_corr: float = 0.85,
+    # seed/hit più permissivi
+    top_n_seeds: int = 250,
+    hit_rt_tol: float = 0.07,
+    hit_min_rel_height: float = 0.05,
+    max_hits: int = 120,
+    # clustering
+    min_corr: float = 0.80,
+    # co-eluizioni: più compound per finestra
+    max_compounds_per_window: int = 4,
+    # filtri “anti-spazzatura” per cluster secondari
+    min_cluster_ions: int = 5,
+    min_cluster_area_frac: float = 0.08,   # rispetto al cluster migliore nella finestra
+    min_scan_purity: float = 0.03,
+    min_matched_peaks: int = 4,
 ) -> Tuple[List[Compound], "object"]:
     """
-    Estrae una lista di Compound (baseline HR) da un singolo mzData.xml.
-    Ritorna anche una tabella di riepilogo (DataFrame se pandas disponibile).
+    Estrae Compound (baseline HR) da un mzData.xml.
     """
-    # 1) TIC (1 pass)
+    # 1) TIC
     rt, tic, n_peaks = compute_tic_mzdata(xml_path)
+
+    # importante: separazione minima ~ 2*half_width per ridurre overlap
     windows = pick_tic_windows(
         rt, tic,
         top_k=top_k_windows,
         half_width_min=half_width_min,
-        min_separation_min=0.08,
-        min_rel_height=0.03,
+        min_separation_min=0.25,
+        min_rel_height=0.001,
         min_width_scans=8,
     )
 
     # 2) raccogli scans per finestra (1 pass sul file)
-    # windows non sovrapposte troppo: check semplice per ogni scan
     win_scans: List[List[Tuple[float, np.ndarray, np.ndarray]]] = [[] for _ in windows]
 
     for sid, rti, mz, inten in iter_mzdata_spectra(xml_path):
@@ -186,16 +193,17 @@ def extract_compounds_from_mzdata(
     compounds: List[Compound] = []
     rows = []
 
-    # 3) per ogni finestra: seed EIC -> hits -> clustering -> scan spectrum
     for w_idx, w in enumerate(windows):
         scans = win_scans[w_idx]
         if len(scans) < 10:
             continue
         scans.sort(key=lambda t: t[0])
 
-        rts, seeds, eics = _build_seed_eics_from_scans(scans, w.apex_rt, ppm_tol=ppm_tol, top_n_seeds=top_n_seeds)
+        rts, seeds, eics, seed_scan_idx = _build_seed_eics_from_scans(
+            scans, w.apex_rt, ppm_tol=ppm_tol, top_n_seeds=top_n_seeds
+        )
 
-        # hits: seed con picco vicino a apex
+        # hits: seed con picco vicino all'apice
         hits = []
         for m0, eic in zip(seeds, eics):
             peaks = pick_peaks_1d(rts, eic, min_rel_height=hit_min_rel_height, min_width_scans=4)
@@ -211,7 +219,7 @@ def extract_compounds_from_mzdata(
         hits.sort(key=lambda t: t[1], reverse=True)
         hits = hits[:max_hits]
 
-        # clustering per correlazione
+        # clustering per correlazione (log1p)
         X = [np.log1p(h[3]) for h in hits]
         n = len(X)
         adj: Dict[int, List[int]] = {}
@@ -221,54 +229,76 @@ def extract_compounds_from_mzdata(
                 if c >= min_corr:
                     adj.setdefault(i, []).append(j)
                     adj.setdefault(j, []).append(i)
+
         comps = _connected_components(adj, n)
+        if not comps:
+            continue
 
         def comp_area(comp):
             return sum(hits[i][1] for i in comp)
 
         comps.sort(key=comp_area, reverse=True)
-        best_comp = comps[0]
-        area_cluster = comp_area(best_comp)
-        area_total = sum(h[1] for h in hits)
-        cluster_purity = (area_cluster / area_total) if area_total > 0 else 0.0
+        best_area = comp_area(comps[0])
+        area_total = sum(h[1] for h in hits) if hits else best_area
 
-        cluster_mz = [hits[i][0] for i in best_comp]
-        cluster_mz.sort()
+        # prendi i primi N cluster della finestra
+        taken = 0
+        for rank, comp_idx in enumerate(comps[:max_compounds_per_window], start=1):
+            area_cluster = comp_area(comp_idx)
+            if best_area > 0 and (area_cluster / best_area) < min_cluster_area_frac:
+                continue
 
-        scan_idx, scan_rt, matched, scan_purity = _extract_scan_level_matched_spectrum(
-            scans, w.apex_rt, cluster_mz, ppm_tol=ppm_tol
-        )
+            if len(comp_idx) < min_cluster_ions:
+                continue
 
-        # crea Compound (spectrum = matched peaks)
-        spectrum_peaks = [Peak(mz=float(m), intensity=float(ii)) for m, ii in matched]
-        compound_id = f"{sample_id}_RT{w.apex_rt:.3f}".replace(".", "p")
+            cluster_mz = sorted([hits[i][0] for i in comp_idx])
 
-        comp = Compound(
-            compound_id=compound_id,
-            sample_id=sample_id,
-            rt=float(w.apex_rt),
-            ri=None,
-            area=float(area_cluster),
-            purity=float(scan_purity),  # qui usiamo la purity scan-level (più conservativa)
-            spectrum=spectrum_peaks,
-        )
-        compounds.append(comp)
+            scan_idx, scan_rt, matched, scan_purity = _extract_scan_level_matched_spectrum(
+                scans, w.apex_rt, cluster_mz, ppm_tol=ppm_tol
+            )
 
-        rows.append({
-            "compound_id": compound_id,
-            "rt_apex": float(w.apex_rt),
-            "n_ions_cluster": int(len(best_comp)),
-            "area_cluster": float(area_cluster),
-            "cluster_purity": float(cluster_purity),
-            "scan_rt": float(scan_rt),
-            "scan_purity": float(scan_purity),
-            "matched_peaks": int(len(matched)),
-        })
+            if len(matched) < min_matched_peaks:
+                continue
+            if scan_purity < min_scan_purity:
+                continue
 
-    # summary table
+            cluster_purity = (area_cluster / area_total) if area_total > 0 else 0.0
+
+            # Compound
+            spectrum_peaks = [Peak(mz=float(m), intensity=float(ii)) for m, ii in matched]
+            compound_id = f"{sample_id}_RT{w.apex_rt:.3f}_C{rank}".replace(".", "p")
+
+            compounds.append(Compound(
+                compound_id=compound_id,
+                sample_id=sample_id,
+                rt=float(w.apex_rt),
+                ri=None,
+                area=float(area_cluster),
+                purity=float(scan_purity),
+                spectrum=spectrum_peaks,
+            ))
+
+            rows.append({
+                "compound_id": compound_id,
+                "rt_apex": float(w.apex_rt),
+                "win_left": float(w.left),
+                "win_right": float(w.right),
+                "rank_in_window": int(rank),
+                "n_ions_cluster": int(len(comp_idx)),
+                "area_cluster": float(area_cluster),
+                "cluster_purity": float(cluster_purity),
+                "scan_rt": float(scan_rt),
+                "scan_purity": float(scan_purity),
+                "matched_peaks": int(len(matched)),
+            })
+
+            taken += 1
+
+        # fine finestra
+
     try:
         import pandas as pd  # type: ignore
-        df = pd.DataFrame(rows).sort_values(["rt_apex"]).reset_index(drop=True)
+        df = pd.DataFrame(rows).sort_values(["rt_apex", "rank_in_window"]).reset_index(drop=True)
         return compounds, df
     except Exception:
         return compounds, rows
