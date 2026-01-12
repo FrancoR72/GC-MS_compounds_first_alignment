@@ -29,14 +29,10 @@ def run_demo_pipeline(
     relax_ri_tol: float | None = None,
     relax_min_cosine: float | None = None,
     relax_max_dlog10_area: float | None = None,
+    # NUOVI FRENI RESCUE
+    max_rescue_score: float | None = 1.2,     # None = disattiva
+    min_score_margin: float | None = 0.15,    # None = disattiva
 ) -> Path:
-    """
-    Pipeline 2-pass:
-      PASS 1 (STRICT): allineamento -> definizione core (>= core_frac)
-      PASS 2 (RELAX, solo core): rescue dei missing nei core senza creare nuove feature
-
-    Se core_frac è None: fa solo PASS 1 e esporta.
-    """
     centroid_csv_path = Path(centroid_csv_path)
     out_xlsx_path = Path(out_xlsx_path)
 
@@ -61,9 +57,7 @@ def run_demo_pipeline(
     for c in all_compounds:
         compounds_by_sample.setdefault(c.sample_id, []).append(c)
 
-    # ------------------------
     # PASS 1: STRICT
-    # ------------------------
     clusters_strict = align_compounds_clusters(
         all_compounds,
         rt_tol=rt_tol,
@@ -77,7 +71,6 @@ def run_demo_pipeline(
 
     df_strict = clusters_to_table(clusters_strict, fill_missing=0.0)
 
-    # Se non vogliamo core/rescue, esporta subito
     if core_frac is None:
         export_feature_table(df_strict, out_xlsx_path, sheet_name=sheet_name)
         return out_xlsx_path
@@ -86,9 +79,7 @@ def run_demo_pipeline(
     df_strict2, sample_cols = add_core_flags_df(df_strict, core_frac=core_frac)
     core_ids = list(df_strict2[df_strict2["is_core"] == True]["feature_id"].astype(str))
 
-    # ------------------------
     # PASS 2: RELAX solo sui core
-    # ------------------------
     rescued_map = {}
     if relax_core and core_ids:
         rt_tol_rel = relax_rt_tol if relax_rt_tol is not None else (rt_tol * 1.5)
@@ -108,6 +99,8 @@ def run_demo_pipeline(
             min_cosine=min_cos_rel,
             mz_tol=mz_tol,
             max_dlog10_area=dlog_rel,
+            max_rescue_score=max_rescue_score,
+            min_score_margin=min_score_margin,
         )
 
     # Tabella finale (dopo rescue)
@@ -115,23 +108,19 @@ def run_demo_pipeline(
 
     df_final = clusters_to_table(clusters_strict, fill_missing=0.0)
 
-    # Riattacco info core strict
     df_final = df_final.merge(
         df_strict2[["feature_id", "n_present", "presence_frac", "is_core"]],
         on="feature_id",
         how="left",
     ).rename(columns={"n_present": "n_present_strict", "presence_frac": "presence_frac_strict"})
 
-    # presenza finale
     present_final = (df_final[sample_cols] > 0.0)
     df_final["n_present_final"] = present_final.sum(axis=1)
     df_final["presence_frac_final"] = df_final["n_present_final"] / float(len(sample_cols))
 
-    # rescue info
     df_final["n_rescued"] = df_final["feature_id"].map(lambda fid: len(rescued_map.get(fid, []))).fillna(0).astype(int)
     df_final["rescued_samples"] = df_final["feature_id"].map(lambda fid: ";".join(rescued_map.get(fid, [])) if fid in rescued_map else "")
 
-    # promozione: core prima, poi presence_final decrescente, poi RT
     df_final = df_final.sort_values(
         ["is_core", "presence_frac_final", "rt_ref"],
         ascending=[False, False, True]

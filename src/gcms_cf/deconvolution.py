@@ -10,18 +10,18 @@ def toy_deconvolve_rt_peaks(
     compound_prefix: str = "C",
     purity_default: float = 1.0,
     ri_default: Optional[float] = None,
+    ri_by_rt: Optional[Dict[float, float]] = None,
     make_ids_unique: bool = True,
 ) -> List[Compound]:
     """
-    Deconvoluzione 'baseline':
+    Baseline deconvolution:
     - ogni RT diventa un Compound
     - area = somma intensità dei picchi a quella RT
     - purity = purity_default
-    - ri = ri_default (None di default)
+    - ri = da ri_by_rt (se fornito), altrimenti ri_default
 
     compound_id:
-    - se make_ids_unique=True: "{sample_id}_C000001" (univoco tra campioni)
-    - altrimenti: "C000001" (riparte per campione)
+    - se make_ids_unique=True: "{sample_id}_C000001"
     """
     compounds: List[Compound] = []
     counter = 1
@@ -34,12 +34,17 @@ def toy_deconvolve_rt_peaks(
         compound_id = f"{sample_id}_{base_id}" if make_ids_unique else base_id
         counter += 1
 
+        if ri_by_rt is not None:
+            ri_val = ri_by_rt.get(rt, ri_default)
+        else:
+            ri_val = ri_default
+
         compounds.append(
             Compound(
                 compound_id=compound_id,
                 sample_id=sample_id,
-                rt=rt,          # minuti
-                ri=ri_default,  # None per ora
+                rt=rt,
+                ri=ri_val,
                 area=area,
                 purity=purity_default,
                 spectrum=spectrum,
