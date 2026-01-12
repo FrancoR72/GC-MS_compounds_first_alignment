@@ -64,7 +64,6 @@ def _assign_to_cluster(
 
         rep: Compound = cl["rep"]
 
-        # RI opzionale
         if use_ri:
             if c.ri is None or rep.ri is None:
                 continue
@@ -88,11 +87,11 @@ def _assign_to_cluster(
 def align_compounds_rt_only(
     compounds: List[Compound],
     *,
-    rt_tol: float = 1.0,            # minuti
+    rt_tol: float = 1.0,
     use_ri: bool = False,
     ri_tol: float = 20.0,
     feature_prefix: str = "F",
-    area_agg: str = "max",          # "max" oppure "sum"
+    area_agg: str = "max",
     min_cosine: float = 0.80,
     mz_tol: float = 0.1,
     max_dlog10_area: float = 1.0,
@@ -118,11 +117,9 @@ def align_compounds_rt_only(
         else:
             clusters[idx]["members"].append(c)
 
-            # aggiorno rt_ref come media
             rts = [m.rt for m in clusters[idx]["members"]]
             clusters[idx]["rt_ref"] = sum(rts) / len(rts)
 
-            # representative = area maggiore
             rep = clusters[idx]["rep"]
             if c.area > rep.area:
                 clusters[idx]["rep"] = c
