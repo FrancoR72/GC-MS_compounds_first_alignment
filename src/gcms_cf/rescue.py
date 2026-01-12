@@ -16,9 +16,10 @@ def rescue_core_missing(
     ri_tol: float,
     min_cosine: float,
     mz_tol: float,
+    mz_ppm: Optional[float],
     max_dlog10_area: float,
-    max_rescue_score: Optional[float] = 1.2,     # None = disattiva
-    min_score_margin: Optional[float] = 0.15,    # None = disattiva
+    max_rescue_score: Optional[float] = 1.2,
+    min_score_margin: Optional[float] = 0.15,
 ) -> Dict[str, List[str]]:
     rescued: Dict[str, List[str]] = {}
 
@@ -44,6 +45,7 @@ def rescue_core_missing(
                 ri_tol=ri_tol,
                 min_cosine=min_cosine,
                 mz_tol=mz_tol,
+                mz_ppm=mz_ppm,
                 max_dlog10_area=max_dlog10_area,
             )
             if not ranked:

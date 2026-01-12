@@ -24,9 +24,25 @@ class Cluster:
 # -----------------------
 # helpers
 # -----------------------
-def _cosine_similarity(peaks_a: List[Peak], peaks_b: List[Peak], *, mz_tol: float = 0.1) -> float:
+def _mz_tol_ppm(mz: float, ppm: float) -> float:
+    return float(mz) * float(ppm) * 1e-6
+
+def _cosine_similarity(
+    peaks_a: List[Peak],
+    peaks_b: List[Peak],
+    *,
+    mz_tol: float = 0.01,
+    mz_ppm: Optional[float] = None
+) -> float:
+    """
+    Cosine similarity tra due spettri centroid.
+    Matching su m/z:
+      - se mz_ppm è impostato: tol = ±(mz_ppm ppm)
+      - altrimenti usa mz_tol assoluto (Da)
+    """
     if not peaks_a or not peaks_b:
         return 0.0
+
     a = sorted(peaks_a, key=lambda p: p.mz)
     b = sorted(peaks_b, key=lambda p: p.mz)
 
@@ -38,12 +54,20 @@ def _cosine_similarity(peaks_a: List[Peak], peaks_b: List[Peak], *, mz_tol: floa
 
     i = j = 0
     while i < len(a) and j < len(b):
-        diff = a[i].mz - b[j].mz
-        if abs(diff) <= mz_tol:
-            dot += a[i].intensity * b[j].intensity
+        mz_a = float(a[i].mz)
+        mz_b = float(b[j].mz)
+        diff = mz_a - mz_b
+
+        if mz_ppm is not None:
+            tol = _mz_tol_ppm(max(mz_a, mz_b), mz_ppm)
+        else:
+            tol = float(mz_tol)
+
+        if abs(diff) <= tol:
+            dot += float(a[i].intensity) * float(b[j].intensity)
             i += 1
             j += 1
-        elif diff < -mz_tol:
+        elif diff < -tol:
             i += 1
         else:
             j += 1
@@ -108,6 +132,7 @@ def _score_to_cluster(
     ri_tol: float,
     min_cosine: float,
     mz_tol: float,
+    mz_ppm: Optional[float],
     max_dlog10_area: float,
     w_rt: float,
     w_ri: float,
@@ -127,7 +152,7 @@ def _score_to_cluster(
     else:
         dist_ri = 0.0
 
-    cos = _cosine_similarity(cl.rep.spectrum, c.spectrum, mz_tol=mz_tol)
+    cos = _cosine_similarity(cl.rep.spectrum, c.spectrum, mz_tol=mz_tol, mz_ppm=mz_ppm)
     if cos < min_cosine:
         return None
 
@@ -148,13 +173,14 @@ def _score_to_cluster(
 def align_compounds_clusters(
     compounds: List[Compound],
     *,
-    rt_tol: float = 1.0,
+    rt_tol: float = 0.20,
     use_ri: bool = False,
     ri_tol: float = 20.0,
     feature_prefix: str = "F",
     area_agg: str = "max",
     min_cosine: float = 0.80,
-    mz_tol: float = 0.1,
+    mz_tol: float = 0.01,
+    mz_ppm: Optional[float] = None,
     max_dlog10_area: float = 1.0,
     w_rt: float = 1.0,
     w_ri: float = 1.0,
@@ -175,7 +201,8 @@ def align_compounds_clusters(
             s = _score_to_cluster(
                 c, cl,
                 rt_tol=rt_tol, use_ri=use_ri, ri_tol=ri_tol,
-                min_cosine=min_cosine, mz_tol=mz_tol,
+                min_cosine=min_cosine,
+                mz_tol=mz_tol, mz_ppm=mz_ppm,
                 max_dlog10_area=max_dlog10_area,
                 w_rt=w_rt, w_ri=w_ri, w_cos=w_cos, w_dlog=w_dlog,
             )
@@ -222,38 +249,6 @@ def clusters_to_table(clusters: List[Cluster], *, fill_missing: float = 0.0):
     except Exception:
         return header, rows
 
-def find_best_match_for_feature(
-    sample_compounds: List[Compound],
-    *,
-    rt_ref: float,
-    ri_ref: Optional[float],
-    rep: Compound,
-    rt_tol: float,
-    use_ri: bool,
-    ri_tol: float,
-    min_cosine: float,
-    mz_tol: float,
-    max_dlog10_area: float,
-    w_rt: float = 1.0,
-    w_ri: float = 1.0,
-    w_cos: float = 1.0,
-    w_dlog: float = 1.0,
-) -> Optional[Compound]:
-    ranked = rank_candidates_for_feature(
-        sample_compounds,
-        rt_ref=rt_ref,
-        ri_ref=ri_ref,
-        rep=rep,
-        rt_tol=rt_tol,
-        use_ri=use_ri,
-        ri_tol=ri_tol,
-        min_cosine=min_cosine,
-        mz_tol=mz_tol,
-        max_dlog10_area=max_dlog10_area,
-        w_rt=w_rt, w_ri=w_ri, w_cos=w_cos, w_dlog=w_dlog,
-    )
-    return ranked[0][0] if ranked else None
-
 def rank_candidates_for_feature(
     sample_compounds: List[Compound],
     *,
@@ -265,16 +260,13 @@ def rank_candidates_for_feature(
     ri_tol: float,
     min_cosine: float,
     mz_tol: float,
+    mz_ppm: Optional[float],
     max_dlog10_area: float,
     w_rt: float = 1.0,
     w_ri: float = 1.0,
     w_cos: float = 1.0,
     w_dlog: float = 1.0,
 ) -> List[Tuple[Compound, float]]:
-    """
-    Ritorna lista di (Compound, score) ordinata per score crescente (migliore per primo).
-    Applica i filtri hard (RT/RI/cos/dlog) e poi ordina per score.
-    """
     dummy = Cluster(
         feature_id="",
         members=[],
@@ -288,11 +280,9 @@ def rank_candidates_for_feature(
     for c in sample_compounds:
         s = _score_to_cluster(
             c, dummy,
-            rt_tol=rt_tol,
-            use_ri=use_ri,
-            ri_tol=ri_tol,
+            rt_tol=rt_tol, use_ri=use_ri, ri_tol=ri_tol,
             min_cosine=min_cosine,
-            mz_tol=mz_tol,
+            mz_tol=mz_tol, mz_ppm=mz_ppm,
             max_dlog10_area=max_dlog10_area,
             w_rt=w_rt, w_ri=w_ri, w_cos=w_cos, w_dlog=w_dlog,
         )
