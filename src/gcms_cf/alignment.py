@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import math
 
 from .models import Compound, Peak
@@ -21,6 +21,9 @@ class Cluster:
     rep: Compound
     by_sample_area: Dict[str, float]
 
+# -----------------------
+# helpers
+# -----------------------
 def _cosine_similarity(peaks_a: List[Peak], peaks_b: List[Peak], *, mz_tol: float = 0.1) -> float:
     if not peaks_a or not peaks_b:
         return 0.0
@@ -139,6 +142,9 @@ def _score_to_cluster(
 
     return (w_rt * rt_term) + (w_ri * ri_term) + (w_cos * cos_term) + (w_dlog * dlog_term)
 
+# -----------------------
+# public API
+# -----------------------
 def align_compounds_clusters(
     compounds: List[Compound],
     *,
@@ -233,6 +239,42 @@ def find_best_match_for_feature(
     w_cos: float = 1.0,
     w_dlog: float = 1.0,
 ) -> Optional[Compound]:
+    ranked = rank_candidates_for_feature(
+        sample_compounds,
+        rt_ref=rt_ref,
+        ri_ref=ri_ref,
+        rep=rep,
+        rt_tol=rt_tol,
+        use_ri=use_ri,
+        ri_tol=ri_tol,
+        min_cosine=min_cosine,
+        mz_tol=mz_tol,
+        max_dlog10_area=max_dlog10_area,
+        w_rt=w_rt, w_ri=w_ri, w_cos=w_cos, w_dlog=w_dlog,
+    )
+    return ranked[0][0] if ranked else None
+
+def rank_candidates_for_feature(
+    sample_compounds: List[Compound],
+    *,
+    rt_ref: float,
+    ri_ref: Optional[float],
+    rep: Compound,
+    rt_tol: float,
+    use_ri: bool,
+    ri_tol: float,
+    min_cosine: float,
+    mz_tol: float,
+    max_dlog10_area: float,
+    w_rt: float = 1.0,
+    w_ri: float = 1.0,
+    w_cos: float = 1.0,
+    w_dlog: float = 1.0,
+) -> List[Tuple[Compound, float]]:
+    """
+    Ritorna lista di (Compound, score) ordinata per score crescente (migliore per primo).
+    Applica i filtri hard (RT/RI/cos/dlog) e poi ordina per score.
+    """
     dummy = Cluster(
         feature_id="",
         members=[],
@@ -242,19 +284,20 @@ def find_best_match_for_feature(
         by_sample_area={},
     )
 
-    best = None
-    best_score = None
+    scored: List[Tuple[Compound, float]] = []
     for c in sample_compounds:
         s = _score_to_cluster(
             c, dummy,
-            rt_tol=rt_tol, use_ri=use_ri, ri_tol=ri_tol,
-            min_cosine=min_cosine, mz_tol=mz_tol,
+            rt_tol=rt_tol,
+            use_ri=use_ri,
+            ri_tol=ri_tol,
+            min_cosine=min_cosine,
+            mz_tol=mz_tol,
             max_dlog10_area=max_dlog10_area,
             w_rt=w_rt, w_ri=w_ri, w_cos=w_cos, w_dlog=w_dlog,
         )
-        if s is None:
-            continue
-        if best_score is None or s < best_score:
-            best_score = s
-            best = c
-    return best
+        if s is not None:
+            scored.append((c, s))
+
+    scored.sort(key=lambda t: t[1])
+    return scored

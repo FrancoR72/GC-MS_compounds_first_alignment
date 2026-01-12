@@ -1,8 +1,8 @@
 from __future__ import annotations
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .models import Compound
-from .alignment import Cluster, find_best_match_for_feature, update_cluster_after_adding
+from .alignment import Cluster, update_cluster_after_adding, rank_candidates_for_feature
 
 def rescue_core_missing(
     clusters: List[Cluster],
@@ -17,6 +17,8 @@ def rescue_core_missing(
     min_cosine: float,
     mz_tol: float,
     max_dlog10_area: float,
+    max_rescue_score: Optional[float] = 1.2,     # None = disattiva
+    min_score_margin: Optional[float] = 0.15,    # None = disattiva
 ) -> Dict[str, List[str]]:
     rescued: Dict[str, List[str]] = {}
 
@@ -32,7 +34,7 @@ def rescue_core_missing(
             if not candidates:
                 continue
 
-            best = find_best_match_for_feature(
+            ranked = rank_candidates_for_feature(
                 candidates,
                 rt_ref=cl.rt_ref,
                 ri_ref=cl.ri_ref,
@@ -44,8 +46,18 @@ def rescue_core_missing(
                 mz_tol=mz_tol,
                 max_dlog10_area=max_dlog10_area,
             )
-            if best is None:
+            if not ranked:
                 continue
+
+            best, best_score = ranked[0]
+
+            if max_rescue_score is not None and best_score > max_rescue_score:
+                continue
+
+            if min_score_margin is not None and len(ranked) >= 2:
+                second_score = ranked[1][1]
+                if (second_score - best_score) < min_score_margin:
+                    continue
 
             cl.members.append(best)
             update_cluster_after_adding(cl, area_agg=area_agg)
